@@ -9,7 +9,7 @@ Round Robin (RR) là một **thuật toán lập lịch công bằng tuyệt đ�
 2. Bộ lập lịch lần lượt duyệt từng sub-queue theo **vòng tròn**: dequeue đúng **một** gói từ hàng hiện tại rồi chuyển sang hàng kế tiếp.
 3. Nếu hàng đợi đó rỗng, bỏ qua và duyệt tiếp – đảm bảo **mỗi luồng được phục vụ công bằng**.
 
-Trong mã nguồn `RR.txt`, các thành phần chính phản ánh lý thuyết này:
+Trong mã nguồn `rr-scheduler.cc`, các thành phần chính phản ánh lý thuyết này:
 | Thành phần | Vai trò |
 |------------|---------|
 | `RRPacketFilter` | Gán **ID luồng** (0-1-2) dựa trên `srcAddr % 3`, phân loại gói vào 3 sub-queue. |
