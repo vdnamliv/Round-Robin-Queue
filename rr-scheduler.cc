@@ -8,8 +8,15 @@
 #include "ns3/drop-tail-queue.h"
 #include "ns3/ipv4-queue-disc-item.h"
 #include <iomanip>
+#include <fstream>
 
 using namespace ns3;
+
+// Hardcode thông số tinh chỉnh
+const std::vector<double> DATA_RATES = {0.15, 0.2, 0.25, 0.3}; // Mbps
+const std::vector<uint32_t> QUEUE_SIZES = {10, 15, 20}; // packets
+const std::vector<double> BOTTLENECK_RATES = {0.8, 1.0, 1.2}; // Mbps
+const std::vector<uint32_t> N_FLOWS = {2, 3, 4};
 
 // Định nghĩa thành phần log
 NS_LOG_COMPONENT_DEFINE ("ns3rrQueueDisc");
@@ -123,7 +130,6 @@ RRQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
 {
   NS_LOG_FUNCTION (this << item);
 
-  // Phân loại gói tin bằng PacketFilter
   int32_t flowId = Classify (item);
   if (flowId < 0 || flowId >= static_cast<int32_t> (m_sub))
     {
@@ -133,7 +139,6 @@ RRQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
       return false;
     }
 
-  // Kiểm tra kích thước hàng đợi chung
   if (GetCurrentSize () + item > GetMaxSize ())
     {
       NS_LOG_LOGIC ("Queue full -- dropping pkt");
@@ -142,7 +147,6 @@ RRQueueDisc::DoEnqueue (Ptr<QueueDiscItem> item)
       return false;
     }
 
-  // Xếp gói tin vào hàng đợi con
   bool retval = GetInternalQueue (flowId)->Enqueue (item);
   if (retval)
     {
@@ -195,11 +199,10 @@ RRQueueDisc::CheckConfig (void)
 
   if (GetNInternalQueues () == 0)
     {
-      // Thêm các hàng đợi DropTail cho mỗi sub-queue
       for (uint32_t i = 0; i < m_sub; ++i)
         {
           AddInternalQueue (CreateObjectWithAttributes<DropTailQueue<QueueDiscItem>> (
-              "MaxSize", QueueSizeValue (QueueSize ("100p"))));
+              "MaxSize", QueueSizeValue (GetMaxSize ())));
         }
     }
 
@@ -221,33 +224,16 @@ RRQueueDisc::InitializeParams (void)
   m_dropped = 0;
 }
 
-int
-main (int argc, char *argv[])
+// Hàm mô phỏng cho một tổ hợp thông số
+void RunSimulation (double dataRate, uint32_t queueSize, double bottleneckRate, uint32_t nFlows, std::ofstream& csvFile)
 {
   double simTime = 30.0;
-  uint32_t nSenders = 3;
   uint32_t packetSize = 1500;
-  std::string dataRate = "0.33Mbps";
-  std::string bottleneckRate = "1Mbps";
   std::string bottleneckDelay = "5ms";
-
-  CommandLine cmd;
-  cmd.AddValue ("simTime", "Simulation time in seconds", simTime);
-  cmd.AddValue ("nSenders", "Number of sender nodes", nSenders);
-  cmd.AddValue ("packetSize", "Packet size in bytes", packetSize);
-  cmd.AddValue ("dataRate", "Data rate per flow", dataRate);
-  cmd.AddValue ("bottleneckRate", "Bottleneck link data rate", bottleneckRate);
-  cmd.AddValue ("bottleneckDelay", "Bottleneck link delay", bottleneckDelay);
-  cmd.Parse (argc, argv);
-
-  // Bật log
-  LogComponentEnable ("ns3rrQueueDisc", LOG_LEVEL_INFO);
-  LogComponentEnable ("OnOffApplication", LOG_LEVEL_INFO);
-  LogComponentEnable ("PacketSink", LOG_LEVEL_INFO);
 
   // Create nodes
   NodeContainer senders;
-  senders.Create (nSenders);
+  senders.Create (nFlows);
   NodeContainer router;
   router.Create (1);
   NodeContainer receiver;
@@ -259,15 +245,16 @@ main (int argc, char *argv[])
   pFast.SetChannelAttribute ("Delay", StringValue ("2ms"));
 
   PointToPointHelper pSlow;
-  pSlow.SetDeviceAttribute ("DataRate", StringValue (bottleneckRate));
+  pSlow.SetDeviceAttribute ("DataRate", DataRateValue (DataRate (bottleneckRate * 1e6)));
   pSlow.SetChannelAttribute ("Delay", StringValue (bottleneckDelay));
-  pSlow.SetQueue ("ns3::DropTailQueue", "MaxSize", StringValue ("100p"));
+  pSlow.SetQueue ("ns3::DropTailQueue", "MaxSize", QueueSizeValue (QueueSize (QueueSizeUnit::PACKETS, queueSize)));
 
   // Install devices
   std::vector<NetDeviceContainer> senderDevices;
-  senderDevices.push_back (pFast.Install (senders.Get (0), router.Get (0)));
-  senderDevices.push_back (pFast.Install (senders.Get (1), router.Get (0)));
-  senderDevices.push_back (pFast.Install (senders.Get (2), router.Get (0)));
+  for (uint32_t i = 0; i < nFlows; ++i)
+    {
+      senderDevices.push_back (pFast.Install (senders.Get (i), router.Get (0)));
+    }
   NetDeviceContainer bottleneckDevices = pSlow.Install (router.Get (0), receiver.Get (0));
 
   // Install Internet stack
@@ -277,13 +264,14 @@ main (int argc, char *argv[])
   // Assign IP addresses
   Ipv4AddressHelper address;
   std::vector<Ipv4InterfaceContainer> senderInterfaces;
-  address.SetBase ("10.0.1.0", "255.255.255.0");
-  senderInterfaces.push_back (address.Assign (senderDevices[0]));
-  address.SetBase ("10.0.2.0", "255.255.255.0");
-  senderInterfaces.push_back (address.Assign (senderDevices[1]));
-  address.SetBase ("10.0.3.0", "255.255.255.0");
-  senderInterfaces.push_back (address.Assign (senderDevices[2]));
-  address.SetBase ("10.0.4.0", "255.255.255.0");
+  for (uint32_t i = 0; i < nFlows; ++i)
+    {
+      std::string base = "10.0." + std::to_string (i + 1) + ".0";
+      address.SetBase (base.c_str (), "255.255.255.0");
+      senderInterfaces.push_back (address.Assign (senderDevices[i]));
+    }
+  std::string bottleneckBase = "10.0." + std::to_string (nFlows + 1) + ".0";
+  address.SetBase (bottleneckBase.c_str(), "255.255.255.0");
   Ipv4InterfaceContainer bottleneckInterfaces = address.Assign (bottleneckDevices);
 
   // Bật định tuyến toàn cục
@@ -291,9 +279,9 @@ main (int argc, char *argv[])
 
   // Install custom RRQueueDisc
   TrafficControlHelper tch;
-  tch.Uninstall (router.Get (0)->GetDevice (nSenders));
-  tch.SetRootQueueDisc ("ns3::RRQueueDisc");
-  QueueDiscContainer qdiscs = tch.Install (router.Get (0)->GetDevice (nSenders));
+  tch.Uninstall (router.Get (0)->GetDevice (nFlows));
+  tch.SetRootQueueDisc ("ns3::RRQueueDisc", "MaxSize", QueueSizeValue (QueueSize (QueueSizeUnit::PACKETS, queueSize)));
+  QueueDiscContainer qdiscs = tch.Install (router.Get (0)->GetDevice (nFlows));
   Ptr<QueueDisc> rootQdisc = qdiscs.Get (0);
   rootQdisc->Initialize ();
 
@@ -304,22 +292,19 @@ main (int argc, char *argv[])
   sinkApps.Start (Seconds (0.5));
   sinkApps.Stop (Seconds (simTime));
 
-  auto InstallFlow = [&] (Ptr<Node> src, double start, uint16_t clientPort, uint32_t flowId)
-  {
-    OnOffHelper onoff ("ns3::UdpSocketFactory",
-                       Address (InetSocketAddress (bottleneckInterfaces.GetAddress (1), clientPort)));
-    onoff.SetAttribute ("DataRate", DataRateValue (DataRate (dataRate)));
-    onoff.SetAttribute ("PacketSize", UintegerValue (packetSize));
-    onoff.SetAttribute ("OnTime", StringValue ("ns3::ConstantRandomVariable[Constant=1]"));
-    onoff.SetAttribute ("OffTime", StringValue ("ns3::ConstantRandomVariable[Constant=0]"));
-    ApplicationContainer app = onoff.Install (src);
-    app.Start (Seconds (start));
-    app.Stop (Seconds (simTime));
-    NS_LOG_INFO ("Flow " << flowId << " sending to " << bottleneckInterfaces.GetAddress (1));
-  };
-  InstallFlow (senders.Get (0), 1.0, port, 1);
-  InstallFlow (senders.Get (1), 1.2, port, 2);
-  InstallFlow (senders.Get (2), 1.4, port, 3);
+  for (uint32_t i = 0; i < nFlows; ++i)
+    {
+      OnOffHelper onoff ("ns3::UdpSocketFactory",
+                         Address (InetSocketAddress (bottleneckInterfaces.GetAddress (1), port)));
+      onoff.SetAttribute ("DataRate", DataRateValue (DataRate (dataRate * 1e6)));
+      onoff.SetAttribute ("PacketSize", UintegerValue (packetSize));
+      onoff.SetAttribute ("OnTime", StringValue ("ns3::ConstantRandomVariable[Constant=1]"));
+      onoff.SetAttribute ("OffTime", StringValue ("ns3::ConstantRandomVariable[Constant=0]"));
+      ApplicationContainer app = onoff.Install (senders.Get (i));
+      app.Start (Seconds (1.0 + i * 0.2));
+      app.Stop (Seconds (simTime));
+      NS_LOG_INFO ("Flow " << (i + 1) << " sending to " << bottleneckInterfaces.GetAddress (1));
+    }
 
   // Install FlowMonitor
   FlowMonitorHelper flowmon;
@@ -333,14 +318,7 @@ main (int argc, char *argv[])
   Ptr<RRQueueDisc> rrq = DynamicCast<RRQueueDisc> (rootQdisc);
   uint64_t enq = rrq->GetEnqueued ();
   uint64_t drop = rrq->GetDropped ();
-  double rate = enq ? 100.0 * drop / enq : 0.0;
-
-  std::cout << "\n=====  SIMPLE ROUND-ROBIN QUEUE  =====\n"
-            << "Enqueued packets : " << enq << "\n"
-            << "Dropped packets  : " << drop << "\n"
-            << "Drop rate        : " << std::fixed
-            << std::setprecision (2) << rate << " %\n"
-            << "=======================================\n";
+  double dropRate = (enq + drop) ? 100.0 * drop / (enq + drop) : 0.0;
 
   // Process FlowMonitor results
   monitor->CheckForLostPackets ();
@@ -355,7 +333,7 @@ main (int argc, char *argv[])
   uint64_t totalLost = 0;
 
   for (const auto& stat : stats)
-    {
+  {
       Ipv4FlowClassifier::FiveTuple tuple = classifier->FindFlow (stat.first);
       double duration = stat.second.timeLastRxPacket.GetSeconds () - stat.second.timeFirstTxPacket.GetSeconds ();
       double throughput = duration > 0 ? stat.second.rxBytes * 8.0 / duration / 1e6 : 0.0; // Mbps
@@ -365,10 +343,46 @@ main (int argc, char *argv[])
       delays.push_back (delay);
       totalThroughput += throughput;
       totalDelay += delay;
-      totalPackets += stat.second.rxPackets;
+      totalPackets += stat.second.txPackets;
       totalLost += stat.second.lostPackets;
+  
+      // Ghi vào CSV cho từng flow
+      csvFile << bottleneckRate << "," << queueSize << "," << stat.first << ","
+              << tuple.sourceAddress << "," << tuple.destinationAddress << ","
+              << stat.second.txPackets << "," << stat.second.rxPackets << "," << stat.second.lostPackets << ","
+              << lossRatio << "," << delay << "," << throughput << ","
+              << "," << enq << "," << drop << "," << dropRate << "\n";
+  }
 
-      NS_LOG_INFO ("Flow " << stat.first << ": txPackets=" << stat.second.txPackets << ", rxPackets=" << stat.second.rxPackets << ", lostPackets=" << stat.second.lostPackets);
+  // Calculate Jain's Fairness Index
+  double sum = 0.0, sumSq = 0.0;
+  for (double t : throughputs)
+  {
+      sum += t;
+      sumSq += t * t;
+  }
+  double fairnessIndex = throughputs.empty () ? 0.0 : (sum * sum) / (throughputs.size () * sumSq);
+
+  // Ghi JainFairness cho toàn bộ lần chạy (1 dòng sau các flow)
+  csvFile << bottleneckRate << "," << queueSize << ",,,"
+          << ",,,,,," << fairnessIndex << "," << enq << "," << drop << "," << dropRate << "\n";
+
+  // In kết quả ra màn hình
+  std::cout << "\n=====  SIMPLE ROUND-ROBIN QUEUE  =====\n"
+            << "DataRate: " << dataRate << " Mbps, QueueSize: " << queueSize
+            << " pkt, BottleneckRate: " << bottleneckRate << " Mbps, nFlows: " << nFlows << "\n"
+            << "Enqueued packets : " << enq << "\n"
+            << "Dropped packets  : " << drop << "\n"
+            << "Drop rate        : " << std::fixed << std::setprecision (2) << dropRate << " %\n"
+            << "=======================================\n";
+
+  for (const auto& stat : stats)
+    {
+      Ipv4FlowClassifier::FiveTuple tuple = classifier->FindFlow (stat.first);
+      double duration = stat.second.timeLastRxPacket.GetSeconds () - stat.second.timeFirstTxPacket.GetSeconds ();
+      double throughput = duration > 0 ? stat.second.rxBytes * 8.0 / duration / 1e6 : 0.0;
+      double delay = stat.second.rxPackets > 0 ? (stat.second.delaySum.GetSeconds () / stat.second.rxPackets) * 1000 : 0.0;
+      double lossRatio = (stat.second.txPackets + stat.second.lostPackets) > 0 ? (100.0 * stat.second.lostPackets / (stat.second.txPackets + stat.second.lostPackets)) : 0.0;
 
       std::cout << "Flow " << stat.first << " (" << tuple.sourceAddress << ":" << tuple.sourcePort
                 << " -> " << tuple.destinationAddress << ":" << tuple.destinationPort << ")\n"
@@ -377,16 +391,6 @@ main (int argc, char *argv[])
                 << "  Packet Loss Ratio: " << lossRatio << "%\n";
     }
 
-  // Calculate Jain's Fairness Index
-  double sum = 0.0, sumSq = 0.0;
-  for (double t : throughputs)
-    {
-      sum += t;
-      sumSq += t * t;
-    }
-  double fairnessIndex = throughputs.empty () ? 0.0 : (sum * sum) / (throughputs.size () * sumSq);
-
-  // Calculate average delay and jitter
   double avgDelay = stats.empty () ? 0.0 : totalDelay / stats.size ();
   double jitter = 0.0;
   for (double d : delays)
@@ -403,9 +407,39 @@ main (int argc, char *argv[])
             << "  Total Packet Loss Ratio: " << (totalPackets + totalLost > 0 ? totalLost * 100.0 / (totalPackets + totalLost) : 0.0) << "%\n"
             << "  Jain's Fairness Index: " << fairnessIndex << std::endl;
 
-  // Lưu FlowMonitor output
-  monitor->SerializeToXmlFile ("rr-scheduler-flowmon.xml", true, true);
-
   Simulator::Destroy ();
+}
+
+int main (int argc, char *argv[])
+{
+  // Bật log
+  LogComponentEnable ("ns3rrQueueDisc", LOG_LEVEL_INFO);
+  LogComponentEnable ("OnOffApplication", LOG_LEVEL_INFO);
+  LogComponentEnable ("PacketSink", LOG_LEVEL_INFO);
+
+  // Mở file CSV để ghi kết quả (xóa file cũ và ghi tiêu đề)
+  std::ofstream csvFile ("rr-scheduler-results.csv", std::ios::out | std::ios::trunc);
+  csvFile << "Bandwidth,QueueSize,Flow,SourceIP,DestIP,TxPackets,RxPackets,LostPacket,LossRate,AvgDelay,Throughput,JainFairness,EnqueuedPackets,DroppedPackets,DropRate\n";
+  csvFile.close();
+  
+  // Lặp qua tất cả tổ hợp thông số
+  for (double dataRate : DATA_RATES)
+  {
+      for (uint32_t queueSize : QUEUE_SIZES)
+      {
+          for (double bottleneckRate : BOTTLENECK_RATES)
+          {
+              for (uint32_t nFlows : N_FLOWS)
+              {
+                  std::cout << "Running: DataRate=" << dataRate << " Mbps, QueueSize=" << queueSize
+                            << " pkt, BottleneckRate=" << bottleneckRate << " Mbps, nFlows=" << nFlows << "\n";
+                  std::ofstream csvFileAppend ("rr-scheduler-results.csv", std::ios::out | std::ios::app);
+                  RunSimulation (dataRate, queueSize, bottleneckRate, nFlows, csvFileAppend);
+                  csvFileAppend.close();
+              }
+          }
+      }
+  }
+
   return 0;
 }
