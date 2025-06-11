@@ -103,7 +103,3 @@ Thuật toán RR đảm bảo không luồng nào bị bỏ rơi, ngay cả khi 
 
 ---
 
-### Hướng dẫn sử dụng file
-- Copy toàn bộ nội dung trên và dán vào file `README.md` trong thư mục dự án.
-- Thay thế đường dẫn GitHub (`https://github.com/yourusername/ns3-rr-simulation.git`) bằng đường dẫn thực tế của bạn.
-- Chạy mô phỏng và cập nhật kết quả thực tế vào phần đánh giá nếu cần.
